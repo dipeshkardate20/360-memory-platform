@@ -11,7 +11,7 @@ MAX_PHOTOS = 24
 MAX_FILE_BYTES = 16 * 1024 * 1024
 MAX_REQUEST_BYTES = 220 * 1024 * 1024
 MAX_IMAGE_PIXELS = 60_000_000
-MAX_EDGE = 2200
+MAX_EDGE = 1600
 ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP"}
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 
@@ -76,7 +76,7 @@ def stitch_images(payloads: list[bytes]) -> tuple[bytes, list[str]]:
     if panorama.shape[1] * panorama.shape[0] > 100_000_000:
         raise StitchError("The stitched result is too large to return. Try fewer or smaller photos.")
 
-    encoded, data = cv2.imencode(".jpg", panorama, [cv2.IMWRITE_JPEG_QUALITY, 94])
+    encoded, data = cv2.imencode(".jpg", panorama, [cv2.IMWRITE_JPEG_QUALITY, 90])
     if not encoded:
         raise StitchError("OpenCV created a panorama but could not encode the output image.")
 

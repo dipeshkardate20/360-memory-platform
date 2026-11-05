@@ -24,6 +24,7 @@ export default function App() {
   const [retakeId, setRetakeId] = useState(null);
   const [title, setTitle] = useState('A little piece of here');
   const [stitching, setStitching] = useState(false);
+  const [stitchStage, setStitchStage] = useState('');
 
   // how are you mother fcker 
   const [stitchError, setStitchError] = useState('');
@@ -120,6 +121,26 @@ export default function App() {
     setPhotos((current) => [...current, ...valid.map((blob) => ({ id: crypto.randomUUID(), blob, url: URL.createObjectURL(blob), createdAt: Date.now() }))]);
   };
 
+  const prepareStitchImage = async (blob) => {
+    // Keep the captured original untouched. Stitching only needs a smaller working copy.
+    const bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image' });
+    try {
+      const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      const context = canvas.getContext('2d', { alpha: false });
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      return await new Promise((resolve, reject) => canvas.toBlob(
+        (compressed) => compressed ? resolve(compressed) : reject(new Error('Could not prepare a photo for stitching.')),
+        'image/jpeg',
+        0.82,
+      ));
+    } finally {
+      bitmap.close();
+    }
+  };
+
   const stitchPhotos = async () => {
     if (photos.length < 2 || stitching) return;
     const revision = photoRevisionRef.current;
@@ -127,13 +148,19 @@ export default function App() {
     const serviceUnavailableMessage = configuredStitchUrl
       ? 'Cannot reach the hosted stitch service. Check its /health URL and confirm Render FRONTEND_ORIGINS includes this exact Vercel domain.'
       : 'This Vercel deployment has no VITE_STITCH_API_URL. Add it in Vercel Environment Variables and redeploy.';
-    const formData = new FormData();
-    photos.forEach((photo, index) => formData.append('images', photo.blob, `capture-${String(index + 1).padStart(2, '0')}.jpg`));
     setStitching(true);
+    setStitchStage('Preparing smaller photo copies…');
     setStitchError('');
     setStitchResult(null);
     try {
+      const formData = new FormData();
+      for (let index = 0; index < photos.length; index += 1) {
+        setStitchStage(`Preparing photo ${index + 1} of ${photos.length}…`);
+        const smallerPhoto = await prepareStitchImage(photos[index].blob);
+        formData.append('images', smallerPhoto, `capture-${String(index + 1).padStart(2, '0')}.jpg`);
+      }
       const stitchApiBase = (configuredStitchUrl || '/stitch-api').replace(/\/+$/, '');
+      setStitchStage('Uploading photos and stitching…');
       const response = await fetch(`${stitchApiBase}/stitch`, { method: 'POST', body: formData });
       if (!response.ok) {
         const problem = await response.json().catch(() => ({}));
@@ -153,6 +180,7 @@ export default function App() {
       setStitchError(error.message.includes('Failed to fetch') ? serviceUnavailableMessage : error.message);
     } finally {
       setStitching(false);
+      setStitchStage('');
     }
   };
 
@@ -214,7 +242,7 @@ export default function App() {
             {photos.length === 0 ? <div className="empty-gallery"><div className="empty-icon"><Icon name="camera" size={21}/></div><div><strong>Nothing captured yet</strong><span>Your photos will find a home here.</span></div></div> : <div className="thumbnail-grid">{photos.map((photo, index) => <div className="photo-tile" key={photo.id}><img src={photo.url} alt={`Capture ${index + 1}`}/><span className="photo-number">{String(index + 1).padStart(2, '0')}</span><div className="tile-actions"><button onClick={() => beginRetake(photo.id)} title="Retake this photo" aria-label={`Retake photo ${index + 1}`}><Icon name="refresh" size={14}/></button><button onClick={() => removePhoto(photo.id)} title="Delete photo" aria-label={`Delete photo ${index + 1}`}><Icon name="trash" size={14}/></button></div></div>)}</div>}
           </div>
 
-          <div className="next-step"><div className="next-step-top"><span className="card-kicker">LOCAL IMAGE PROCESSING</span><span className="next-number">02</span></div><div className="next-step-title">Stitch your<br/><em>surroundings.</em></div><div className="next-step-bottom"><span>{photos.length < 2 ? 'Add at least two overlapping photos' : `${photos.length} photos ready to process`}</span><span className="next-arrow"><Icon name="arrow" size={17}/></span></div><button className="stitch-button" onClick={stitchPhotos} disabled={stitching || photos.length < 2}>{stitching ? 'Finding overlapping features…' : 'Stitch panorama'} <Icon name="arrow" size={16}/></button><small className="phase-hint">Creates a partial panorama on this computer</small>{stitchError && <div className="stitch-error" role="alert">{stitchError}</div>}{stitchResult && <div className="stitch-result"><img src={stitchResult.url} alt="Stitched partial panorama"/><div className="stitch-result-meta"><span>PARTIAL PANORAMA · {stitchResult.imageCount} PHOTOS</span><a href={stitchResult.url} download="still-here-panorama.jpg">Download image</a></div>{stitchResult.warnings.map((warning) => <small key={warning}>{warning}</small>)}</div>}</div>
+          <div className="next-step"><div className="next-step-top"><span className="card-kicker">LOCAL IMAGE PROCESSING</span><span className="next-number">02</span></div><div className="next-step-title">Stitch your<br/><em>surroundings.</em></div><div className="next-step-bottom"><span>{photos.length < 2 ? 'Add at least two overlapping photos' : `${photos.length} photos ready to process`}</span><span className="next-arrow"><Icon name="arrow" size={17}/></span></div><button className="stitch-button" onClick={stitchPhotos} disabled={stitching || photos.length < 2}>{stitching ? stitchStage || 'Stitching…' : 'Stitch panorama'} <Icon name="arrow" size={16}/></button><small className="phase-hint">Creates a partial panorama on this computer</small>{stitchError && <div className="stitch-error" role="alert">{stitchError}</div>}{stitchResult && <div className="stitch-result"><img src={stitchResult.url} alt="Stitched partial panorama"/><div className="stitch-result-meta"><span>PARTIAL PANORAMA · {stitchResult.imageCount} PHOTOS</span><a href={stitchResult.url} download="still-here-panorama.jpg">Download image</a></div>{stitchResult.warnings.map((warning) => <small key={warning}>{warning}</small>)}</div>}</div>
         </aside>
       </section>
       <footer className="footer"><span>MADE FOR THE MOMENTS THAT MATTER</span><span>360° MEMORY STUDIO <i>·</i> 2026</span></footer>
