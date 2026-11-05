@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import RotationTracker from './RotationTracker.jsx';
 
 const angleDifference = (left, right) => ((left - right + 540) % 360) - 180;
 
@@ -321,6 +322,7 @@ export default function App() {
             <div className="frame-bottom"><span>CAMERA PREVIEW</span><span>01 <i>/</i> 02</span></div>
           </div>
 
+          <RotationTracker />
           <div className="capture-tools"><div className="mode-area"><div className="mode-switch" role="group" aria-label="Capture mode"><button className={captureMode === 'manual' ? 'mode-choice selected' : 'mode-choice'} aria-pressed={captureMode === 'manual'} onClick={useManualCapture}>Manual</button><button className={captureMode === 'automatic' ? 'mode-choice selected' : 'mode-choice'} aria-pressed={captureMode === 'automatic'} onClick={enableAutomaticCapture} disabled={Boolean(retakeId)} title={retakeId ? 'Retakes use the manual shutter' : undefined}>Automatic</button></div><div className="mode-caption"><strong>{captureMode === 'automatic' ? 'Automatic capture' : 'Manual capture'}</strong><small>{captureMode === 'automatic' ? autoHint : 'Take each photo when you’re ready'}</small></div></div><button className="add-photos" onClick={() => fileRef.current?.click()}>Add photos <span>＋</span></button><input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(event) => { addFiles(event.target.files); event.target.value = ''; }}/></div>
         </div>
 
