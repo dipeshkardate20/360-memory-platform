@@ -5,6 +5,13 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: '0.0.0.0',
+    proxy: {
+      '/stitch-api': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/stitch-api/, ''),
+      },
+    },
     allowedHosts: [
       'trustees-drawing-heights-turned.trycloudflare.com'
     ]

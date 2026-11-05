@@ -1,17 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import RotationTracker from './RotationTracker.jsx';
-
-const angleDifference = (left, right) => ((left - right + 540) % 360) - 180;
-
-function captureGuidance(count) {
-  if (count === 0) return 'Point forward to begin';
-  if (count < 4) return 'Rotate a little to the right';
-  if (count < 8) return 'Keep turning with plenty of overlap';
-  if (count < 12) return 'Continue around to close the sweep';
-  if (count < 14) return 'Switch to manual for an upper view';
-  if (count < 16) return 'Switch to manual for a lower view';
-  return 'Coverage looks good — add any missed angles';
-}
 
 function Icon({ name, size = 18 }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true };
@@ -31,35 +18,17 @@ export default function App() {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const fileRef = useRef(null);
-  const frameTimerRef = useRef(null);
-  const sensorTimeoutRef = useRef(null);
-  const sensorSamplesRef = useRef([]);
-  const captureRef = useRef(null);
-  const visualStableRef = useRef(false);
-  const currentYawRef = useRef(null);
-  const lastCapturedYawRef = useRef(null);
-  const stableSinceRef = useRef(null);
-  const autoCaptureLockRef = useRef(false);
   const [cameraState, setCameraState] = useState('idle');
   const [cameraError, setCameraError] = useState('');
   const [photos, setPhotos] = useState([]);
   const [retakeId, setRetakeId] = useState(null);
   const [title, setTitle] = useState('A little piece of here');
-  const [captureMode, setCaptureMode] = useState('manual');
-  const [autoEnabled, setAutoEnabled] = useState(false);
-  const [autoHint, setAutoHint] = useState('Enable automatic capture to begin');
-  const photoCountRef = useRef(0);
-  photoCountRef.current = photos.length;
+  const [stitching, setStitching] = useState(false);
+  const [stitchError, setStitchError] = useState('');
+  const [stitchResult, setStitchResult] = useState(null);
+  const photoRevisionRef = useRef(0);
 
   const stopCamera = useCallback(() => {
-    setAutoEnabled(false);
-    setCaptureMode('manual');
-    clearTimeout(sensorTimeoutRef.current);
-    clearInterval(frameTimerRef.current);
-    sensorSamplesRef.current = [];
-    visualStableRef.current = false;
-    lastCapturedYawRef.current = null;
-    currentYawRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
@@ -68,9 +37,11 @@ export default function App() {
 
   useEffect(() => () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
-    clearTimeout(sensorTimeoutRef.current);
-    clearInterval(frameTimerRef.current);
   }, []);
+
+  useEffect(() => () => {
+    if (stitchResult?.url) URL.revokeObjectURL(stitchResult.url);
+  }, [stitchResult]);
 
   const startCamera = async () => {
     setCameraError('');
@@ -100,7 +71,7 @@ export default function App() {
     }
   };
 
-  const capture = (onCaptured) => {
+  const capture = () => {
     const video = videoRef.current;
     if (!video || !video.videoWidth) return;
     const canvas = document.createElement('canvas');
@@ -110,6 +81,8 @@ export default function App() {
     canvas.toBlob((blob) => {
       if (!blob) return;
       const image = { id: crypto.randomUUID(), url: URL.createObjectURL(blob), blob, createdAt: Date.now() };
+      photoRevisionRef.current += 1;
+      setStitchResult(null);
       if (retakeId) {
         setPhotos((current) => {
           const old = current.find((photo) => photo.id === retakeId);
@@ -120,150 +93,12 @@ export default function App() {
       } else {
         setPhotos((current) => [...current, image]);
       }
-      onCaptured?.();
     }, 'image/jpeg', 0.92);
   };
-  captureRef.current = capture;
-
-  const enableAutomaticCapture = async () => {
-    setCameraError('');
-    if (retakeId) {
-      setCameraError('Finish this retake with the manual shutter first.');
-      return;
-    }
-    if (!('DeviceOrientationEvent' in window)) {
-      setCameraError('This browser does not provide device orientation. Manual capture is ready to use.');
-      return;
-    }
-    try {
-      if (typeof window.DeviceOrientationEvent.requestPermission === 'function') {
-        const permission = await window.DeviceOrientationEvent.requestPermission();
-        if (permission !== 'granted') throw new Error('permission');
-      }
-      if (cameraState !== 'active') {
-        const started = await startCamera();
-        if (!started) return;
-      }
-      setCaptureMode('automatic');
-      setAutoEnabled(true);
-      setAutoHint('Hold the phone steady to find your starting angle');
-      sensorSamplesRef.current = [];
-      lastCapturedYawRef.current = null;
-      currentYawRef.current = null;
-      stableSinceRef.current = null;
-      sensorTimeoutRef.current = window.setTimeout(() => {
-        if (sensorSamplesRef.current.length === 0) {
-          setAutoEnabled(false);
-          setCaptureMode('manual');
-          setCameraError('No usable orientation readings came through. Automatic capture is unavailable here; use the manual shutter.');
-        }
-      }, 3500);
-    } catch (error) {
-      setCaptureMode('manual');
-      setAutoEnabled(false);
-      setCameraError(error.message === 'permission' ? 'Sensor permission was declined. Use manual capture or allow motion access in browser settings.' : 'Automatic capture could not start. Manual capture is ready to use.');
-    }
-  };
-
-  const useManualCapture = () => {
-    setCaptureMode('manual');
-    setAutoEnabled(false);
-    clearTimeout(sensorTimeoutRef.current);
-    clearInterval(frameTimerRef.current);
-    sensorSamplesRef.current = [];
-    lastCapturedYawRef.current = null;
-    autoCaptureLockRef.current = false;
-    setAutoHint('Manual capture is ready');
-  };
-
-  useEffect(() => {
-    if (!autoEnabled || cameraState !== 'active') return undefined;
-
-    const frameCanvas = document.createElement('canvas');
-    frameCanvas.width = 32;
-    frameCanvas.height = 24;
-    const frameContext = frameCanvas.getContext('2d', { willReadFrequently: true });
-    let previousFrame = null;
-    let stillFrames = 0;
-    frameTimerRef.current = window.setInterval(() => {
-      const video = videoRef.current;
-      if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !frameContext) return;
-      frameContext.drawImage(video, 0, 0, frameCanvas.width, frameCanvas.height);
-      const pixels = frameContext.getImageData(0, 0, frameCanvas.width, frameCanvas.height).data;
-      if (previousFrame) {
-        let difference = 0;
-        for (let index = 0; index < pixels.length; index += 4) {
-          difference += Math.abs(pixels[index] - previousFrame[index]);
-          difference += Math.abs(pixels[index + 1] - previousFrame[index + 1]);
-          difference += Math.abs(pixels[index + 2] - previousFrame[index + 2]);
-        }
-        const averageDifference = difference / (frameCanvas.width * frameCanvas.height * 3);
-        stillFrames = averageDifference < 8 ? stillFrames + 1 : 0;
-        visualStableRef.current = stillFrames >= 3;
-      }
-      previousFrame = new Uint8ClampedArray(pixels);
-    }, 250);
-
-    const onOrientation = (event) => {
-      if (event.alpha == null || event.beta == null || event.gamma == null) return;
-      currentYawRef.current = event.alpha;
-      clearTimeout(sensorTimeoutRef.current);
-      const reading = { alpha: event.alpha, beta: event.beta, gamma: event.gamma, time: Date.now() };
-      const samples = [...sensorSamplesRef.current, reading].slice(-7);
-      sensorSamplesRef.current = samples;
-      if (samples.length < 7) {
-        setAutoHint('Hold steady while the phone finds its direction');
-        return;
-      }
-      const first = samples[0];
-      const spreads = [
-        Math.max(...samples.map((sample) => Math.abs(angleDifference(sample.alpha, first.alpha)))),
-        Math.max(...samples.map((sample) => Math.abs(sample.beta - first.beta))),
-        Math.max(...samples.map((sample) => Math.abs(sample.gamma - first.gamma))),
-      ];
-      const orientationStable = spreads.every((spread) => spread < 2.4);
-      if (!orientationStable) {
-        stableSinceRef.current = null;
-        setAutoHint('Hold steady — checking the camera view');
-        return;
-      }
-      stableSinceRef.current ??= Date.now();
-      const yaw = event.alpha;
-      const enoughTurn = lastCapturedYawRef.current == null || Math.abs(angleDifference(yaw, lastCapturedYawRef.current)) >= 24;
-      if (!enoughTurn) {
-        setAutoHint('Rotate slowly to a new angle');
-        return;
-      }
-      if (!visualStableRef.current || Date.now() - stableSinceRef.current < 900) {
-        setAutoHint('Hold steady — checking the camera view');
-        return;
-      }
-      if (autoCaptureLockRef.current) return;
-      autoCaptureLockRef.current = true;
-      lastCapturedYawRef.current = yaw;
-      setAutoHint('Steady — capturing this angle');
-      captureRef.current?.(() => {
-        window.setTimeout(() => {
-          autoCaptureLockRef.current = false;
-          if (photoCountRef.current >= 12) {
-            setAutoEnabled(false);
-            setCaptureMode('manual');
-            setAutoHint('Horizontal sweep captured. Use manual mode for upper and lower views');
-          } else {
-            setAutoHint('Captured. Rotate slowly to the next angle');
-          }
-        }, 700);
-      });
-    };
-
-    window.addEventListener('deviceorientation', onOrientation);
-    return () => {
-      window.removeEventListener('deviceorientation', onOrientation);
-      clearInterval(frameTimerRef.current);
-    };
-  }, [autoEnabled, cameraState]);
 
   const removePhoto = (id) => {
+    photoRevisionRef.current += 1;
+    setStitchResult(null);
     setPhotos((current) => {
       const photo = current.find((item) => item.id === id);
       if (photo) URL.revokeObjectURL(photo.url);
@@ -273,22 +108,57 @@ export default function App() {
   };
 
   const addFiles = (files) => {
-    const valid = Array.from(files || []).filter((file) => file.type.startsWith('image/'));
+    const selected = Array.from(files || []);
+    const valid = selected.filter((file) => ['image/jpeg', 'image/png', 'image/webp'].includes(file.type));
+    if (valid.length !== selected.length) setStitchError('Use JPEG, PNG, or WebP photos for local stitching.');
+    if (valid.length) {
+      photoRevisionRef.current += 1;
+      setStitchResult(null);
+    }
     setPhotos((current) => [...current, ...valid.map((blob) => ({ id: crypto.randomUUID(), blob, url: URL.createObjectURL(blob), createdAt: Date.now() }))]);
   };
 
+  const stitchPhotos = async () => {
+    if (photos.length < 2 || stitching) return;
+    const revision = photoRevisionRef.current;
+    const formData = new FormData();
+    photos.forEach((photo, index) => formData.append('images', photo.blob, `capture-${String(index + 1).padStart(2, '0')}.jpg`));
+    setStitching(true);
+    setStitchError('');
+    setStitchResult(null);
+    try {
+      const response = await fetch('/stitch-api/stitch', { method: 'POST', body: formData });
+      if (!response.ok) {
+        const problem = await response.json().catch(() => ({}));
+        if (response.status >= 500) throw new Error('Could not reach the local stitching service. Start the Python service, then try again.');
+        throw new Error(problem.error || `Stitching failed (${response.status}).`);
+      }
+      const blob = await response.blob();
+      if (photoRevisionRef.current !== revision) throw new Error('The photo set changed during stitching. Please run it again.');
+      const warnings = response.headers.get('X-Stitch-Warnings');
+      setStitchResult({
+        url: URL.createObjectURL(blob),
+        imageCount: Number(response.headers.get('X-Image-Count') || photos.length),
+        projection: response.headers.get('X-Projection-Type') || 'partial_panorama',
+        warnings: warnings ? JSON.parse(warnings) : [],
+      });
+    } catch (error) {
+      setStitchError(error.message.includes('Failed to fetch')
+        ? 'Could not reach the local stitching service. Start the Python service, then try again.'
+        : error.message);
+    } finally {
+      setStitching(false);
+    }
+  };
+
   const beginRetake = (id) => {
-    useManualCapture();
     setRetakeId(id);
     if (cameraState !== 'active') startCamera();
   };
 
-  const manualShutter = () => {
-    if (autoEnabled && currentYawRef.current != null) lastCapturedYawRef.current = currentYawRef.current;
-    capture();
-  };
+  const manualShutter = () => capture();
 
-  const progress = Math.min(100, Math.round((photos.length / 16) * 100));
+  const progress = Math.min(100, Math.round((photos.length / 12) * 100));
 
   return (
     <main className="app-shell">
@@ -315,15 +185,14 @@ export default function App() {
             {cameraState === 'active' && <>
               <div className="viewfinder viewfinder-tl"/><div className="viewfinder viewfinder-tr"/><div className="viewfinder viewfinder-bl"/><div className="viewfinder viewfinder-br"/>
               <div className="camera-live-top"><span className="live-badge"><span/> LIVE</span><button className="camera-close" onClick={stopCamera} aria-label="Turn off camera"><Icon name="close"/></button></div>
-              <div className="camera-guide"><span className="guide-spark">✳</span><span>{retakeId ? 'Frame your retake' : autoEnabled ? autoHint : captureGuidance(photos.length)}</span></div>
-              <div className="camera-controls"><button className="shutter" onClick={manualShutter} aria-label={retakeId ? 'Retake photo' : 'Capture photo'}><span/></button><span className="shutter-hint">{retakeId ? 'RETAKE PHOTO' : autoEnabled ? 'MANUAL OVERRIDE' : 'TAP TO CAPTURE'}</span></div>
+              <div className="camera-guide"><span className="guide-spark">✳</span><span>{retakeId ? 'Frame your retake' : 'Capture overlapping views around you'}</span></div>
+              <div className="camera-controls"><button className="shutter" onClick={manualShutter} aria-label={retakeId ? 'Retake photo' : 'Capture photo'}><span/></button><span className="shutter-hint">{retakeId ? 'RETAKE PHOTO' : 'TAP TO CAPTURE'}</span></div>
             </>}
             {cameraError && <div className="camera-error" role="alert"><span>{cameraError}</span><button onClick={() => setCameraError('')} aria-label="Dismiss"><Icon name="close" size={16}/></button></div>}
             <div className="frame-bottom"><span>CAMERA PREVIEW</span><span>01 <i>/</i> 02</span></div>
           </div>
 
-          <RotationTracker />
-          <div className="capture-tools"><div className="mode-area"><div className="mode-switch" role="group" aria-label="Capture mode"><button className={captureMode === 'manual' ? 'mode-choice selected' : 'mode-choice'} aria-pressed={captureMode === 'manual'} onClick={useManualCapture}>Manual</button><button className={captureMode === 'automatic' ? 'mode-choice selected' : 'mode-choice'} aria-pressed={captureMode === 'automatic'} onClick={enableAutomaticCapture} disabled={Boolean(retakeId)} title={retakeId ? 'Retakes use the manual shutter' : undefined}>Automatic</button></div><div className="mode-caption"><strong>{captureMode === 'automatic' ? 'Automatic capture' : 'Manual capture'}</strong><small>{captureMode === 'automatic' ? autoHint : 'Take each photo when you’re ready'}</small></div></div><button className="add-photos" onClick={() => fileRef.current?.click()}>Add photos <span>＋</span></button><input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(event) => { addFiles(event.target.files); event.target.value = ''; }}/></div>
+          <div className="capture-tools"><div className="mode-label"><span className="mode-icon"><Icon name="camera" size={16}/></span><div><strong>Manual capture</strong><small>Take each photo when you’re ready</small></div></div><button className="add-photos" onClick={() => fileRef.current?.click()}>Add photos <span>＋</span></button><input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" multiple hidden onChange={(event) => { addFiles(event.target.files); event.target.value = ''; }}/></div>
         </div>
 
         <aside className="side-column">
@@ -332,7 +201,7 @@ export default function App() {
             <label className="title-label" htmlFor="memory-title">Give this moment a name</label>
             <input id="memory-title" className="title-input" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={80}/>
             <div className="title-underline"/>
-            <div className="progress-block"><div className="progress-heading"><span>Photo collection</span><strong>{photos.length} <small>photos</small></strong></div><div className="progress-track"><div className="progress-fill" style={{ width: `${progress}%` }}/></div><div className="progress-caption"><span>{photos.length < 12 ? 'A few more angles make a fuller memory' : 'Lovely coverage — keep going if you like'}</span><span>~16</span></div></div>
+            <div className="progress-block"><div className="progress-heading"><span>Photo collection</span><strong>{photos.length} <small>photos</small></strong></div><div className="progress-track"><div className="progress-fill" style={{ width: `${progress}%` }}/></div><div className="progress-caption"><span>{photos.length < 12 ? 'Suggested: 12–20 overlapping photos' : 'Suggested range met — add more if useful'}</span><span>12–20</span></div></div>
             <div className="coverage-note"><span className="coverage-icon">✳</span><span>Small turns, lots of overlap.<br/>Keep your feet in one place.</span></div>
           </div>
 
@@ -340,7 +209,7 @@ export default function App() {
             {photos.length === 0 ? <div className="empty-gallery"><div className="empty-icon"><Icon name="camera" size={21}/></div><div><strong>Nothing captured yet</strong><span>Your photos will find a home here.</span></div></div> : <div className="thumbnail-grid">{photos.map((photo, index) => <div className="photo-tile" key={photo.id}><img src={photo.url} alt={`Capture ${index + 1}`}/><span className="photo-number">{String(index + 1).padStart(2, '0')}</span><div className="tile-actions"><button onClick={() => beginRetake(photo.id)} title="Retake this photo" aria-label={`Retake photo ${index + 1}`}><Icon name="refresh" size={14}/></button><button onClick={() => removePhoto(photo.id)} title="Delete photo" aria-label={`Delete photo ${index + 1}`}><Icon name="trash" size={14}/></button></div></div>)}</div>}
           </div>
 
-          <div className="next-step"><div className="next-step-top"><span className="card-kicker">UP NEXT</span><span className="next-number">02</span></div><div className="next-step-title">Stitch your<br/><em>surroundings.</em></div><div className="next-step-bottom"><span>Ready when you are</span><span className="next-arrow"><Icon name="arrow" size={17}/></span></div><button className="stitch-button" disabled title="Uploading and stitching are added in a later phase">Continue to stitching <Icon name="arrow" size={16}/></button><small className="phase-hint">Upload and stitching arrive in the next phase</small></div>
+          <div className="next-step"><div className="next-step-top"><span className="card-kicker">LOCAL IMAGE PROCESSING</span><span className="next-number">02</span></div><div className="next-step-title">Stitch your<br/><em>surroundings.</em></div><div className="next-step-bottom"><span>{photos.length < 2 ? 'Add at least two overlapping photos' : `${photos.length} photos ready to process`}</span><span className="next-arrow"><Icon name="arrow" size={17}/></span></div><button className="stitch-button" onClick={stitchPhotos} disabled={stitching || photos.length < 2}>{stitching ? 'Finding overlapping features…' : 'Stitch panorama'} <Icon name="arrow" size={16}/></button><small className="phase-hint">Creates a partial panorama on this computer</small>{stitchError && <div className="stitch-error" role="alert">{stitchError}</div>}{stitchResult && <div className="stitch-result"><img src={stitchResult.url} alt="Stitched partial panorama"/><div className="stitch-result-meta"><span>PARTIAL PANORAMA · {stitchResult.imageCount} PHOTOS</span><a href={stitchResult.url} download="still-here-panorama.jpg">Download image</a></div>{stitchResult.warnings.map((warning) => <small key={warning}>{warning}</small>)}</div>}</div>
         </aside>
       </section>
       <footer className="footer"><span>MADE FOR THE MOMENTS THAT MATTER</span><span>360° MEMORY STUDIO <i>·</i> 2026</span></footer>
