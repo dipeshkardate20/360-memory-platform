@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Still Here — 360° Memory Platform
 
 A local-first prototype for capturing overlapping photos to build a memory panorama. The frontend is being developed in phases; this initial version implements the browser capture experience.
@@ -25,3 +26,7 @@ Open the local URL printed by Vite. Camera access requires `localhost` or HTTPS 
 ## Current scope
 
 Upload, panorama stitching, saved memories, the Java API, Python image processing, and PostgreSQL are planned for later phases. The stitching action is intentionally unavailable until those features exist.
+=======
+# 360-memory-platform
+360° Memory Capture Platform
+>>>>>>> 66a9914846c2787462a4cbc0b441b5fdd6fb97ef
