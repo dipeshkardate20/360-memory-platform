@@ -1,5 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+const angleDifference = (left, right) => ((left - right + 540) % 360) - 180;
+
+function captureGuidance(count) {
+  if (count === 0) return 'Point forward to begin';
+  if (count < 4) return 'Rotate a little to the right';
+  if (count < 8) return 'Keep turning with plenty of overlap';
+  if (count < 12) return 'Continue around to close the sweep';
+  if (count < 14) return 'Switch to manual for an upper view';
+  if (count < 16) return 'Switch to manual for a lower view';
+  return 'Coverage looks good — add any missed angles';
+}
+
 function Icon({ name, size = 18 }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true };
   const paths = {
@@ -18,26 +30,52 @@ export default function App() {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const fileRef = useRef(null);
+  const frameTimerRef = useRef(null);
+  const sensorTimeoutRef = useRef(null);
+  const sensorSamplesRef = useRef([]);
+  const captureRef = useRef(null);
+  const visualStableRef = useRef(false);
+  const currentYawRef = useRef(null);
+  const lastCapturedYawRef = useRef(null);
+  const stableSinceRef = useRef(null);
+  const autoCaptureLockRef = useRef(false);
   const [cameraState, setCameraState] = useState('idle');
   const [cameraError, setCameraError] = useState('');
   const [photos, setPhotos] = useState([]);
   const [retakeId, setRetakeId] = useState(null);
   const [title, setTitle] = useState('A little piece of here');
+  const [captureMode, setCaptureMode] = useState('manual');
+  const [autoEnabled, setAutoEnabled] = useState(false);
+  const [autoHint, setAutoHint] = useState('Enable automatic capture to begin');
+  const photoCountRef = useRef(0);
+  photoCountRef.current = photos.length;
 
   const stopCamera = useCallback(() => {
+    setAutoEnabled(false);
+    setCaptureMode('manual');
+    clearTimeout(sensorTimeoutRef.current);
+    clearInterval(frameTimerRef.current);
+    sensorSamplesRef.current = [];
+    visualStableRef.current = false;
+    lastCapturedYawRef.current = null;
+    currentYawRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
     setCameraState('idle');
   }, []);
 
-  useEffect(() => () => streamRef.current?.getTracks().forEach((track) => track.stop()), []);
+  useEffect(() => () => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    clearTimeout(sensorTimeoutRef.current);
+    clearInterval(frameTimerRef.current);
+  }, []);
 
   const startCamera = async () => {
     setCameraError('');
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraError('Camera access is not available in this browser. Open this page over HTTPS or on localhost, or add photos from your device.');
-      return;
+      return false;
     }
     setCameraState('starting');
     try {
@@ -48,6 +86,7 @@ export default function App() {
         await videoRef.current.play();
       }
       setCameraState('active');
+      return true;
     } catch (error) {
       const messages = {
         NotAllowedError: 'Camera permission was blocked. Allow camera access in your browser settings and try again.',
@@ -56,10 +95,11 @@ export default function App() {
       };
       setCameraError(messages[error.name] || 'The camera could not be started. Check your browser permissions and try again.');
       setCameraState('idle');
+      return false;
     }
   };
 
-  const capture = () => {
+  const capture = (onCaptured) => {
     const video = videoRef.current;
     if (!video || !video.videoWidth) return;
     const canvas = document.createElement('canvas');
@@ -79,8 +119,148 @@ export default function App() {
       } else {
         setPhotos((current) => [...current, image]);
       }
+      onCaptured?.();
     }, 'image/jpeg', 0.92);
   };
+  captureRef.current = capture;
+
+  const enableAutomaticCapture = async () => {
+    setCameraError('');
+    if (retakeId) {
+      setCameraError('Finish this retake with the manual shutter first.');
+      return;
+    }
+    if (!('DeviceOrientationEvent' in window)) {
+      setCameraError('This browser does not provide device orientation. Manual capture is ready to use.');
+      return;
+    }
+    try {
+      if (typeof window.DeviceOrientationEvent.requestPermission === 'function') {
+        const permission = await window.DeviceOrientationEvent.requestPermission();
+        if (permission !== 'granted') throw new Error('permission');
+      }
+      if (cameraState !== 'active') {
+        const started = await startCamera();
+        if (!started) return;
+      }
+      setCaptureMode('automatic');
+      setAutoEnabled(true);
+      setAutoHint('Hold the phone steady to find your starting angle');
+      sensorSamplesRef.current = [];
+      lastCapturedYawRef.current = null;
+      currentYawRef.current = null;
+      stableSinceRef.current = null;
+      sensorTimeoutRef.current = window.setTimeout(() => {
+        if (sensorSamplesRef.current.length === 0) {
+          setAutoEnabled(false);
+          setCaptureMode('manual');
+          setCameraError('No usable orientation readings came through. Automatic capture is unavailable here; use the manual shutter.');
+        }
+      }, 3500);
+    } catch (error) {
+      setCaptureMode('manual');
+      setAutoEnabled(false);
+      setCameraError(error.message === 'permission' ? 'Sensor permission was declined. Use manual capture or allow motion access in browser settings.' : 'Automatic capture could not start. Manual capture is ready to use.');
+    }
+  };
+
+  const useManualCapture = () => {
+    setCaptureMode('manual');
+    setAutoEnabled(false);
+    clearTimeout(sensorTimeoutRef.current);
+    clearInterval(frameTimerRef.current);
+    sensorSamplesRef.current = [];
+    lastCapturedYawRef.current = null;
+    autoCaptureLockRef.current = false;
+    setAutoHint('Manual capture is ready');
+  };
+
+  useEffect(() => {
+    if (!autoEnabled || cameraState !== 'active') return undefined;
+
+    const frameCanvas = document.createElement('canvas');
+    frameCanvas.width = 32;
+    frameCanvas.height = 24;
+    const frameContext = frameCanvas.getContext('2d', { willReadFrequently: true });
+    let previousFrame = null;
+    let stillFrames = 0;
+    frameTimerRef.current = window.setInterval(() => {
+      const video = videoRef.current;
+      if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !frameContext) return;
+      frameContext.drawImage(video, 0, 0, frameCanvas.width, frameCanvas.height);
+      const pixels = frameContext.getImageData(0, 0, frameCanvas.width, frameCanvas.height).data;
+      if (previousFrame) {
+        let difference = 0;
+        for (let index = 0; index < pixels.length; index += 4) {
+          difference += Math.abs(pixels[index] - previousFrame[index]);
+          difference += Math.abs(pixels[index + 1] - previousFrame[index + 1]);
+          difference += Math.abs(pixels[index + 2] - previousFrame[index + 2]);
+        }
+        const averageDifference = difference / (frameCanvas.width * frameCanvas.height * 3);
+        stillFrames = averageDifference < 8 ? stillFrames + 1 : 0;
+        visualStableRef.current = stillFrames >= 3;
+      }
+      previousFrame = new Uint8ClampedArray(pixels);
+    }, 250);
+
+    const onOrientation = (event) => {
+      if (event.alpha == null || event.beta == null || event.gamma == null) return;
+      currentYawRef.current = event.alpha;
+      clearTimeout(sensorTimeoutRef.current);
+      const reading = { alpha: event.alpha, beta: event.beta, gamma: event.gamma, time: Date.now() };
+      const samples = [...sensorSamplesRef.current, reading].slice(-7);
+      sensorSamplesRef.current = samples;
+      if (samples.length < 7) {
+        setAutoHint('Hold steady while the phone finds its direction');
+        return;
+      }
+      const first = samples[0];
+      const spreads = [
+        Math.max(...samples.map((sample) => Math.abs(angleDifference(sample.alpha, first.alpha)))),
+        Math.max(...samples.map((sample) => Math.abs(sample.beta - first.beta))),
+        Math.max(...samples.map((sample) => Math.abs(sample.gamma - first.gamma))),
+      ];
+      const orientationStable = spreads.every((spread) => spread < 2.4);
+      if (!orientationStable) {
+        stableSinceRef.current = null;
+        setAutoHint('Hold steady — checking the camera view');
+        return;
+      }
+      stableSinceRef.current ??= Date.now();
+      const yaw = event.alpha;
+      const enoughTurn = lastCapturedYawRef.current == null || Math.abs(angleDifference(yaw, lastCapturedYawRef.current)) >= 24;
+      if (!enoughTurn) {
+        setAutoHint('Rotate slowly to a new angle');
+        return;
+      }
+      if (!visualStableRef.current || Date.now() - stableSinceRef.current < 900) {
+        setAutoHint('Hold steady — checking the camera view');
+        return;
+      }
+      if (autoCaptureLockRef.current) return;
+      autoCaptureLockRef.current = true;
+      lastCapturedYawRef.current = yaw;
+      setAutoHint('Steady — capturing this angle');
+      captureRef.current?.(() => {
+        window.setTimeout(() => {
+          autoCaptureLockRef.current = false;
+          if (photoCountRef.current >= 12) {
+            setAutoEnabled(false);
+            setCaptureMode('manual');
+            setAutoHint('Horizontal sweep captured. Use manual mode for upper and lower views');
+          } else {
+            setAutoHint('Captured. Rotate slowly to the next angle');
+          }
+        }, 700);
+      });
+    };
+
+    window.addEventListener('deviceorientation', onOrientation);
+    return () => {
+      window.removeEventListener('deviceorientation', onOrientation);
+      clearInterval(frameTimerRef.current);
+    };
+  }, [autoEnabled, cameraState]);
 
   const removePhoto = (id) => {
     setPhotos((current) => {
@@ -97,8 +277,14 @@ export default function App() {
   };
 
   const beginRetake = (id) => {
+    useManualCapture();
     setRetakeId(id);
     if (cameraState !== 'active') startCamera();
+  };
+
+  const manualShutter = () => {
+    if (autoEnabled && currentYawRef.current != null) lastCapturedYawRef.current = currentYawRef.current;
+    capture();
   };
 
   const progress = Math.min(100, Math.round((photos.length / 16) * 100));
@@ -128,14 +314,14 @@ export default function App() {
             {cameraState === 'active' && <>
               <div className="viewfinder viewfinder-tl"/><div className="viewfinder viewfinder-tr"/><div className="viewfinder viewfinder-bl"/><div className="viewfinder viewfinder-br"/>
               <div className="camera-live-top"><span className="live-badge"><span/> LIVE</span><button className="camera-close" onClick={stopCamera} aria-label="Turn off camera"><Icon name="close"/></button></div>
-              <div className="camera-guide"><span className="guide-spark">✳</span><span>{retakeId ? 'Frame your retake' : 'Turn a little for your next angle'}</span></div>
-              <div className="camera-controls"><button className="shutter" onClick={capture} aria-label={retakeId ? 'Retake photo' : 'Capture photo'}><span/></button><span className="shutter-hint">{retakeId ? 'RETAKE PHOTO' : 'TAP TO CAPTURE'}</span></div>
+              <div className="camera-guide"><span className="guide-spark">✳</span><span>{retakeId ? 'Frame your retake' : autoEnabled ? autoHint : captureGuidance(photos.length)}</span></div>
+              <div className="camera-controls"><button className="shutter" onClick={manualShutter} aria-label={retakeId ? 'Retake photo' : 'Capture photo'}><span/></button><span className="shutter-hint">{retakeId ? 'RETAKE PHOTO' : autoEnabled ? 'MANUAL OVERRIDE' : 'TAP TO CAPTURE'}</span></div>
             </>}
             {cameraError && <div className="camera-error" role="alert"><span>{cameraError}</span><button onClick={() => setCameraError('')} aria-label="Dismiss"><Icon name="close" size={16}/></button></div>}
             <div className="frame-bottom"><span>CAMERA PREVIEW</span><span>01 <i>/</i> 02</span></div>
           </div>
 
-          <div className="capture-tools"><div className="mode-label"><span className="mode-icon"><Icon name="camera" size={16}/></span><div><strong>Manual capture</strong><small>Take each photo when you’re ready</small></div></div><button className="add-photos" onClick={() => fileRef.current?.click()}>Add photos <span>＋</span></button><input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(event) => { addFiles(event.target.files); event.target.value = ''; }}/></div>
+          <div className="capture-tools"><div className="mode-area"><div className="mode-switch" role="group" aria-label="Capture mode"><button className={captureMode === 'manual' ? 'mode-choice selected' : 'mode-choice'} aria-pressed={captureMode === 'manual'} onClick={useManualCapture}>Manual</button><button className={captureMode === 'automatic' ? 'mode-choice selected' : 'mode-choice'} aria-pressed={captureMode === 'automatic'} onClick={enableAutomaticCapture} disabled={Boolean(retakeId)} title={retakeId ? 'Retakes use the manual shutter' : undefined}>Automatic</button></div><div className="mode-caption"><strong>{captureMode === 'automatic' ? 'Automatic capture' : 'Manual capture'}</strong><small>{captureMode === 'automatic' ? autoHint : 'Take each photo when you’re ready'}</small></div></div><button className="add-photos" onClick={() => fileRef.current?.click()}>Add photos <span>＋</span></button><input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(event) => { addFiles(event.target.files); event.target.value = ''; }}/></div>
         </div>
 
         <aside className="side-column">
