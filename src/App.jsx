@@ -24,6 +24,8 @@ export default function App() {
   const [retakeId, setRetakeId] = useState(null);
   const [title, setTitle] = useState('A little piece of here');
   const [stitching, setStitching] = useState(false);
+
+  // how are you mother fcker 
   const [stitchError, setStitchError] = useState('');
   const [stitchResult, setStitchResult] = useState(null);
   const photoRevisionRef = useRef(0);
