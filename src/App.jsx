@@ -123,17 +123,21 @@ export default function App() {
   const stitchPhotos = async () => {
     if (photos.length < 2 || stitching) return;
     const revision = photoRevisionRef.current;
+    const configuredStitchUrl = import.meta.env.VITE_STITCH_API_URL?.trim();
+    const serviceUnavailableMessage = configuredStitchUrl
+      ? 'Cannot reach the hosted stitch service. Check its /health URL and confirm Render FRONTEND_ORIGINS includes this exact Vercel domain.'
+      : 'This Vercel deployment has no VITE_STITCH_API_URL. Add it in Vercel Environment Variables and redeploy.';
     const formData = new FormData();
     photos.forEach((photo, index) => formData.append('images', photo.blob, `capture-${String(index + 1).padStart(2, '0')}.jpg`));
     setStitching(true);
     setStitchError('');
     setStitchResult(null);
     try {
-      const stitchApiBase = (import.meta.env.VITE_STITCH_API_URL || '/stitch-api').replace(/\/+$/, '');
+      const stitchApiBase = (configuredStitchUrl || '/stitch-api').replace(/\/+$/, '');
       const response = await fetch(`${stitchApiBase}/stitch`, { method: 'POST', body: formData });
       if (!response.ok) {
         const problem = await response.json().catch(() => ({}));
-        if (response.status >= 500) throw new Error('Could not reach the local stitching service. Start the Python service, then try again.');
+        if (!configuredStitchUrl || response.status >= 500) throw new Error(serviceUnavailableMessage);
         throw new Error(problem.error || `Stitching failed (${response.status}).`);
       }
       const blob = await response.blob();
@@ -146,9 +150,7 @@ export default function App() {
         warnings: warnings ? JSON.parse(warnings) : [],
       });
     } catch (error) {
-      setStitchError(error.message.includes('Failed to fetch')
-        ? 'Could not reach the local stitching service. Start the Python service, then try again.'
-        : error.message);
+      setStitchError(error.message.includes('Failed to fetch') ? serviceUnavailableMessage : error.message);
     } finally {
       setStitching(false);
     }
