@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import './rotation-tracker.css';
-import { clampRotation, directionalProgressDelta, wrappedAngleDelta } from './rotation-math.js';
+import { clampRotation, deviceCameraHeading, directionalProgressDelta, wrappedAngleDelta } from './rotation-math.js';
 
 const MILESTONES = Array.from({ length: 12 }, (_, index) => (index + 1) * 30);
 
@@ -10,7 +10,7 @@ export default function RotationTracker() {
   const [angle, setAngle] = useState(0);
   const [reached, setReached] = useState([]);
   const [message, setMessage] = useState('Choose a direction, then start at your starting view.');
-  const lastAlpha = useRef(null);
+  const lastHeading = useRef(null);
   const angleRef = useRef(0);
   const milestonesRef = useRef(new Set());
   const sensorTimeout = useRef(null);
@@ -18,7 +18,7 @@ export default function RotationTracker() {
 
   const resetTracker = (nextStatus) => {
     clearTimeout(sensorTimeout.current);
-    lastAlpha.current = null;
+    lastHeading.current = null;
     angleRef.current = 0;
     milestonesRef.current = new Set();
     receivedSensorReading.current = false;
@@ -58,24 +58,27 @@ export default function RotationTracker() {
     if (status !== 'tracking') return undefined;
 
     const onOrientation = (event) => {
-      if (event.alpha == null || !Number.isFinite(event.alpha)) return;
+      if (event.alpha == null || event.beta == null || event.gamma == null) return;
+      const heading = deviceCameraHeading(event.alpha, event.beta, event.gamma);
+      if (heading == null) {
+        setMessage('Hold the phone upright so the camera direction can be tracked.');
+        return;
+      }
       clearTimeout(sensorTimeout.current);
       receivedSensorReading.current = true;
 
-      if (lastAlpha.current == null) {
-        lastAlpha.current = event.alpha;
+      if (lastHeading.current == null) {
+        lastHeading.current = heading;
         setMessage(`Starting direction set to 0°. Rotate ${direction}.`);
         return;
       }
 
-      let delta = wrappedAngleDelta(event.alpha, lastAlpha.current);
-      lastAlpha.current = event.alpha;
+      let delta = wrappedAngleDelta(heading, lastHeading.current);
+      lastHeading.current = heading;
       if (Math.abs(delta) < 0.8) return;
       // Ignore impossible one-frame jumps, while allowing brisk phone turns.
       if (Math.abs(delta) > 45) return;
 
-      // DeviceOrientation alpha increases for a counter-clockwise turn, so a
-      // user's right turn advances in the opposite alpha direction.
       const chosenDirectionDelta = directionalProgressDelta(delta, direction);
       updateAngle(angleRef.current + chosenDirectionDelta);
     };
