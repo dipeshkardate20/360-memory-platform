@@ -129,7 +129,8 @@ export default function App() {
     setStitchError('');
     setStitchResult(null);
     try {
-      const response = await fetch('/stitch-api/stitch', { method: 'POST', body: formData });
+      const stitchApiBase = (import.meta.env.VITE_STITCH_API_URL || '/stitch-api').replace(/\/+$/, '');
+      const response = await fetch(`${stitchApiBase}/stitch`, { method: 'POST', body: formData });
       if (!response.ok) {
         const problem = await response.json().catch(() => ({}));
         if (response.status >= 500) throw new Error('Could not reach the local stitching service. Start the Python service, then try again.');

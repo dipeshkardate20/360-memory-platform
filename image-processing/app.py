@@ -18,8 +18,28 @@ def health():
     return jsonify(status="ok", engine="opencv", projection="partial_panorama")
 
 
-@app.post("/stitch")
+@app.after_request
+def add_cors_headers(response):
+    origin = request.headers.get("Origin")
+    configured_origins = {
+        value.strip()
+        for value in os.environ.get("FRONTEND_ORIGINS", "").split(",")
+        if value.strip()
+    }
+    allowed_origins = configured_origins | {"http://localhost:5173", "http://127.0.0.1:5173"}
+    if origin in allowed_origins:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Expose-Headers"] = "X-Projection-Type, X-Image-Count, X-Stitch-Warnings"
+    return response
+
+
+@app.route("/stitch", methods=["POST", "OPTIONS"])
 def stitch():
+    if request.method == "OPTIONS":
+        return "", 204
     uploads = request.files.getlist("images")
     if len(uploads) < 2:
         return jsonify(error="Add at least two overlapping photos."), 400

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -43,6 +45,16 @@ class StitchApiTests(unittest.TestCase):
         response = self.client.get('/health')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json['engine'], 'opencv')
+
+    def test_allows_configured_vercel_origin_and_preflight(self) -> None:
+        with patch.dict(os.environ, {'FRONTEND_ORIGINS': 'https://memory-demo.vercel.app'}):
+            response = self.client.options('/stitch', headers={
+                'Origin': 'https://memory-demo.vercel.app',
+                'Access-Control-Request-Method': 'POST',
+            })
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(response.headers['Access-Control-Allow-Origin'], 'https://memory-demo.vercel.app')
+        self.assertIn('X-Image-Count', response.headers['Access-Control-Expose-Headers'])
 
     def test_requires_two_images(self) -> None:
         response = self.client.post('/stitch', data={'images': (io.BytesIO(b'one'), 'one.jpg')})
